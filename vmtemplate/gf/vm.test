@@ -1,0 +1,59 @@
+CPU = "2"
+VCPU = "2"
+MEMORY = "512"
+OS = [
+        arch = "i686",
+        boot = "hd",
+        root = "vda1" ]
+DISK = [
+        source = "/mincom/cloud/vmimage/oel6-gold.img",
+        target = "vda",
+        bus = "virtio",
+        if = "virtio",
+        driver = "raw",
+        readonly = "no" ]
+DISK = [
+        type = "swap",
+        size = "1024",
+        bus = "virtio",
+        if = "virtio",
+        driver = "raw",
+        target = "vdb"]
+DISK = [
+        type = "fs", 
+        format = "ocfs2",
+        target = "vdc",
+        size= "100",
+        bus = "virtio",
+        if = "virtio",
+        driver = "raw",
+        readonly = "no" ]
+GRAPHICS = [
+        type = "vnc",
+        listen = "0.0.0.0",
+        port = "-1"]
+NIC = [
+        network = "vnet.gf-10.1.1",
+        bridge = "br0",
+        model = "virtio" ]
+FEATURES = [
+        acpi = yes ]
+RAW = [ type = "kvm",
+        data = "<devices> <input type='tablet' bus='usb'/> </devices>" ]
+RAW = [ type = "kvm",
+        data = "<on_poweroff>preserve</on_poweroff><on_reboot>restart</on_reboot><on_crash>restart</on_crash>" ]
+SAVE = yes
+REQUIREMENTS = "FREEMEMORY > 300"
+CONTEXT = [
+        files = "/mincom/cloud/vmcontext/init.sh /mincom/cloud/vmcontext/ctier.id_dsa.pub /mincom/cloud/vmcontext/ctier.repo",
+        vm_domain = "$NETWORK[VM_DOMAIN, NAME=\"vnet.gf-10.1.1\"]",
+        vm_eth0_dns1 = "$NETWORK[VM_ETH0_DNS1, NAME=\"vnet.gf-10.1.1\"]",
+        vm_eth0_dns2 = "$NETWORK[VM_ETH0_DNS2, NAME=\"vnet.gf-10.1.1\"]",
+        vm_eth0_gateway = "$NETWORK[VM_ETH0_GATEWAY, NAME=\"vnet.gf-10.1.1\"]",
+        vm_eth0_ipaddr = "$NIC[IP]",
+        vm_eth0_netmask = "$NETWORK[VM_ETH0_NETMASK, NAME=\"vnet.gf-10.1.1\"]",
+        vm_hostname = "ellt-$NAME-vm",
+        vm_search = "$NETWORK[VM_SEARCH, NAME=\"vnet.gf-10.1.1\"]",
+        vm_username = ctier,
+        vm_ntp1 = "$NETWORK[VM_NTP1, NAME=\"vnet.gf-10.1.1\"]",
+        timezone = "Australia/Brisbane" ]

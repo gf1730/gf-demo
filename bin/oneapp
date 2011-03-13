@@ -1,0 +1,389 @@
+#!/bin/bash
+
+################################################################################
+#
+# Program: oneapp
+#
+# Description:
+#
+#  Creates and mounts a raw image file to have an application installed into
+#  to be used as a software deployment unit.
+#
+################################################################################
+
+MODE=
+IMAGEFILE=
+SIZE=
+FILESYSTEM=
+DEFAULT_FILESYSTEM=ocfs2
+CLOUDBASE=/mincom/cloud
+VMIMAGE=$CLOUDBASE/vmimage
+VMMNT=$CLOUDBASE/vmmnt
+
+function usage() {
+   echo "usage: oneappimg create|attach|detach|delete [<options>]"
+   echo "       create: --image <file> --label <label> --size <mb> [--filesystem xfs|ocfs2]"
+   echo "       attach: --image <file>"
+   echo "       detach: --image <file>"
+   echo "       delete: --image <file>"
+}
+
+function main() {
+
+   if [ $# -lt 1 ]; then
+      usage
+      exit 1
+   fi
+
+   parse_args $*
+
+   if [ -n "$SIZE" ]; then
+      SIZE=$(parse_size $SIZE)
+   fi
+
+   case $MODE in
+      create)
+         mode_create $*
+         ;;
+      attach)
+         mode_attach $*
+         ;;
+      detach)
+         mode_detach $*
+         ;;
+      delete)
+         mode_delete $*
+         ;;
+      *)
+         error "Unknown mode: $MODE"
+         exit 1
+         ;;
+   esac
+}
+
+mode_create() {
+
+   if [ -z "$IMAGEFILE" -o -z "$SIZE" -o -z "$LABEL" ]; then
+      usage
+      exit 1
+   fi
+
+   create_image $IMAGEFILE $SIZE
+   if [ $? -ne 0 ]; then
+      abort "Unable to create image $IMAGEFILE"
+   fi
+
+   attach_image $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to attach image $IMAGEFILE"
+   fi
+
+   create_filesystem $IMAGEFILE $LABEL $FILESYSTEM
+   if [ $? -ne 0 ]; then
+      abort "Unable to create file system for $IMAGEFILE"
+   fi
+
+   mount_filesystem $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to mount file system for $IMAGEFILE"
+   fi
+
+}
+
+mode_attach() {
+
+   if [ -z "$IMAGEFILE" ]; then
+      usage
+      exit 1
+   fi
+
+   attach_image $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to attach image for $IMAGEFILE"
+   fi
+
+   mount_filesystem $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to mount file system for $IMAGEFILE"
+   fi
+
+}
+
+mode_detach() {
+
+   if [ -z "$IMAGEFILE" ]; then
+      usage
+      exit 1
+   fi
+
+   unmount_filesystem $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to unmount file system for $IMAGEFILE"
+   fi
+
+   detach_image $IMAGEFILE
+   if [ $? -ne 0 ]; then
+      abort "Unable to detach image for $IMAGEFILE"
+   fi
+}
+
+mode_delete() {
+
+   if [ -z "$IMAGEFILE" ]; then
+      usage
+      exit 1
+   fi
+   mode_detach $*
+
+   info "Removing image file $IMAGEFILE"
+   echodo rm -f $IMAGEFILE
+
+}
+
+parse_args() {
+
+  ##############################################################################
+  ## Parse command line args
+  ##############################################################################
+  debug "Parsing command line args"
+
+  MODE=$1
+  shift
+
+  for arg in $*; do
+    if [ -n "${nextarg}" ]; then
+      eval ${nextarg}=${arg}
+      unset nextarg
+      continue
+    fi
+    case ${arg} in
+      --image*) nextarg=IMAGEFILE
+          continue
+          ;;
+      --size) nextarg=SIZE
+          continue
+          ;;
+      --label) nextarg=LABEL
+          continue
+          ;;
+      --filesystem) nextarg=FILESYSTEM
+          continue
+          ;;
+      -h) usage
+          exit 0
+          ;;
+      -v) exit 0
+          ;;
+      -\?) usage
+          exit 0
+          ;;
+       *) abort "Unknown command line argument \"${arg}\""
+          ;;
+    esac
+  done
+
+
+}
+
+function parse_size() {
+
+   sz=$1
+   szi=$(echo $sz | tr -d '[:alpha:]')
+   szf=$(echo $sz | tr -d '[:digit:]' | tr '[:lower:]' '[:upper:]')
+
+   case $szf in
+      *UB|*U) factor='1024^12';;
+      *VB|*V) factor='1024^11';;
+      *WB|*W) factor='1024^10';;
+      *XB|*X) factor='1024^9';;
+      *YB|*Y) factor='1024^8';;
+      *ZB|*Z) factor='1024^7';;
+      *EB|*E) factor='1024^6';;
+      *PB|*P) factor='1024^5';;
+      *TB|*T) factor='1024^4';;
+      *GB|*G) factor='1024^3';;
+      *MB|*M) factor='1024^2';;
+      *KB|*K) factor='1024^1';;
+      *B) factor='1024^0'; sz="$sz ";;
+      *[!0-9.]*) echo "Don't know how to handle $sz"; return 1;;
+      *) factor='1024^0'; sz="$sz  ";;
+   esac
+
+   echo "scale=0; ${szi}*($factor)/1048576"|bc
+}
+
+function echodo() {
+   echo "CMND : $*"
+   $*
+}
+
+function info() {
+   echo "INFO : $*"
+}
+
+function warn() {
+   echo "WARN : $*"
+}
+
+function error() {
+   echo "ERROR: $*"
+}
+
+function abort() {
+   echo "ABORT: $*"
+   exit 1
+}
+
+function debug() {
+   if [ -n "$DEBUG" ]; then
+      echo "DBG: $*"
+   fi
+}
+
+function create_image() {
+
+   debug "create_image($*)"
+
+   IMAGEFILE=$1
+   SIZE=$2
+
+   info "Creating file ${IMAGEFILE} of size ${SIZE}MB"
+   if [ ! -f "$IMAGEFILE" ]; then
+      echodo qemu-img create -f raw $IMAGEFILE ${SIZE}MB
+      echodo sudo /sbin/parted $IMAGEFILE mklabel msdos
+      echodo sudo /sbin/parted $IMAGEFILE mkpart primary 0 $SIZE
+   else
+      error "File already exists: $IMAGEFILE"
+      return 1
+   fi
+
+   return 0
+}
+
+function attach_image() {
+
+   IMAGEFILE=$1
+
+   LOOPBACK=$(get_loopback $IMAGEFILE)
+
+   if [ -z "$LOOPBACK" ]; then
+      LOOPBACK=$(sudo /sbin/losetup -f)
+      info "Setting up loopback device $LOOPBACK for image $IMAGEFILE"
+      echodo sudo /sbin/losetup $LOOPBACK $IMAGEFILE
+   else
+      info "Loopback device $LOOPBACK already exists for image $IMAGEFILE"
+   fi
+
+   LOOPPART=$(get_looppart $LOOPBACK)
+   if [ -z "$LOOPPART" ]; then
+      info "Creating device maps for $LOOPBACK" 
+      echodo sudo /sbin/kpartx -av $LOOPBACK
+   else
+      info "Device maps already exist for $LOOPBACK"
+   fi
+}
+
+function detach_image() {
+
+   IMAGEFILE=$1
+
+   LOOPBACK=$(get_loopback $IMAGEFILE)
+
+   if [ -n "$LOOPBACK" ]; then
+      info "Removing loopback device $LOOPBACK"
+      echodo sudo /sbin/kpartx -dv $LOOPBACK
+      echodo sudo /sbin/losetup -d $LOOPBACK
+   else
+      info "No loopback device associated with image $IMAGEFILE"
+   fi
+   return 0
+}
+
+function create_filesystem() {
+
+   IMAGEFILE=$1
+   LABEL=$2
+   FILESYSTEM=$3
+
+   LOOPBACK=$(get_loopback $IMAGEFILE)
+   LOOPPART=$(get_looppart $LOOPBACK)
+
+   if [ -z "$FILESYSTEM" ]; then
+      FILESYSTEM=$DEFAULT_FILESYSTEM
+   fi
+
+   case $FILESYSTEM in
+     xfs)
+       echodo sudo /sbin/mkfs.xfs -L $LABEL $LOOPPART
+       ;;
+     ocfs2)
+       echodo sudo /sbin/mkfs.ocfs2 -L $LABEL --fs-feature-level=max-features -M local -N 1 -T mail $LOOPPART
+       ;;
+     *)
+       abort "Invalid file system type specified: $FILESYSTEM"
+       ;;
+   esac
+
+}
+
+function mount_filesystem() {
+
+   IMAGEFILE=$1
+
+   LOOPBACK=$(get_loopback $IMAGEFILE)
+   LOOPPART=$(get_looppart $LOOPBACK)
+   MOUNTPOINT=$VMMNT/${IMAGEFILE%.*}
+
+   if [ ! -d "$MOUNTPOINT" ]; then
+      info "Creating mount point $MOUNTPOINT"
+      echodo mkdir -p $VMMNT/${IMAGEFILE%.*}
+   else
+      info "Mount point $MOUNTPOINT already exists"
+   fi
+
+   sudo /bin/mount | grep " $MOUNTPOINT " >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      info "Mounting file system on $LOOPPART to $MOUNTPOINT"
+      echodo sudo /bin/mount $LOOPPART $MOUNTPOINT
+   else
+      info "$MOUNTPOINT already mounted"
+   fi
+   return 0
+}
+
+function unmount_filesystem() {
+   
+   IMAGEFILE=$1
+
+   LOOPBACK=$(get_loopback $IMAGEFILE)
+   LOOPPART=$(get_looppart $LOOPBACK)
+   MOUNTPOINT=$VMMNT/${IMAGEFILE%.*}
+
+   if [ -n "$LOOPPART" ]; then
+
+      sudo /bin/mount | grep " $MOUNTPOINT " >/dev/null 2>&1
+      if [ $? -eq 0 ]; then
+         info "Unmounting file system"
+         echodo sudo /bin/umount $LOOPPART
+      else
+         info "File system on $LOOPPART not mounted to $MOUNTPOINT"
+      fi
+
+   else
+      info "No file system mounted on $MOUNTPOINT"
+   fi 
+   return 0
+}
+
+function get_loopback() {
+   echo $(sudo /sbin/losetup -a | awk -F: -v IMAGEFILE="($IMAGEFILE)" '$0 ~ IMAGEFILE { print $1 }')
+}
+
+function get_looppart() {
+   LOOPBACK=$1
+   if [ -n "$LOOPBACK" ]; then
+      echo $(ls -1 /dev/mapper/${LOOPBACK##*/}*)
+   fi
+}
+
+main $*

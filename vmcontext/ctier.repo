@@ -1,0 +1,8 @@
+#
+# ctier.repo
+#
+[ctier]
+name=ControlTier
+baseurl=http://mmsbnectl01.root.tequinox.com/yum
+gpgcheck=0
+enabled=1

@@ -1,0 +1,112 @@
+#!/bin/bash
+
+################################################################################
+# onevm - wrapper script for onevm command
+#
+# Description: This script is used to wrap the standard onevm OpenNebula command 
+# to provide a facility for locking VMs to prevent them from being deleted with 
+# the onevm delete command.
+################################################################################
+
+ONEVMLOCK=/var/lib/one/onevm.lock
+COMMAND=$1
+VM=$2
+ONEVM=/usr/bin/onevm
+
+function main()
+{
+   if [ $# -ge 1 ]; then
+      case $COMMAND in
+         lock)
+            lockVM $VM
+            exit 0
+         ;;
+         unlock)
+            unlockVM $VM
+            exit 0
+         ;;
+         showlock|locked)
+            showlockVM
+            exit 0;
+         ;;
+         delete)
+            deleteVM $VM
+         ;;
+       esac
+   fi
+   $ONEVM $*
+}
+
+function lockVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm lock <VM>"
+      exit 1
+   fi
+   VMNAME=$(onevm show $VM | awk '/^NAME.*:/ {print $NF}')
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   grep -c ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+     echo "$VMNAME $(date +%s)" >> $ONEVMLOCK
+     echo "VM $VMNAME locked"
+   fi
+}
+
+function unlockVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm unlock <VM>"
+      exit 1
+   fi
+   VMNAME=$(onevm show $VM | awk '/^NAME.*:/ {print $NF}')
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   grep -cw ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+      grep -vw ^$VMNAME $ONEVMLOCK > /tmp/onevm.lock.$$
+      mv /tmp/onevm.lock.$$ $ONEVMLOCK
+      echo "VM $VMNAME unlocked"
+   fi
+}
+
+function showlockVM()
+{
+   if [ -f $ONEVMLOCK ]; then
+      exec 3<$ONEVMLOCK
+      printf "%-10s %-30s\n" "Name" "Date Locked"
+      printf "%-10s %-30s\n" "----------" "------------------------------"
+      while read <&3 VM DATE; do
+         printf "%-10s %-30s\n" "$VM" "$(date -d @$DATE)"
+      done
+      exec 3>&-
+   fi
+}
+
+function deleteVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm delete <VM>"
+      exit 1
+   fi
+   VMNAME=$(onevm show $VM | awk '/^NAME.*:/ {print $NF}')
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   grep -cw ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+      echo "VM $VMNAME is locked"
+      exit 1
+   fi
+}
+
+# Run the real onevm command
+main $*

@@ -1,0 +1,153 @@
+#!/bin/bash
+
+################################################################################
+##
+## VM Startup Script for KVM/libvirt
+##
+## Author: Graeme Farmer, Mincom Managed Services, 2010
+##
+## $Revision: 1.0 $
+## $Date: 2010/10/02 14:22:51 $
+##
+# chkconfig: 2345 98 02
+# description: Used to start up/shut down KVM virtual machines
+################################################################################
+
+CLOUDBASE=/mincom/cloud
+VMCONF=$CLOUDBASE/etc/vm.conf
+VMSTORE=$CLOUDBASE/vmstore
+CLUCONF=$CLOUDBASE/etc/cluster.conf
+SHUTDOWN_INTERVAL=5
+SHUTDOWN_TIMEOUT=120
+
+
+CLUSTERHOSTS=$(<$CLUCONF)
+if [ -z "$CLUSTERHOSTS" ]; then
+   CLUSTERHOSTS=$(hostname -s)
+fi
+
+function isVMRunning() {
+
+  VMNAME=$1
+
+  for host in $CLUSTERHOSTS; do
+    virsh -c "qemu://$host/system" list | grep -c " $VMNAME " >/dev/null 2>&1
+    if [ $? -eq -0 ]; then
+      echo "VM $VMNAME already running on host $host"
+      return 1
+    fi
+  done
+  return 0
+}
+
+function start() {
+
+  awk -v host=$(hostname -s) -F: 'match($3,host) {print $1}' $VMCONF | while read VMNAME; do
+    runVM $VMNAME
+    if [ $? -ne 0 ]; then
+      echo "Failed to startup VM $VMNAME"
+      continue
+    fi
+  done
+
+  return 0
+}
+
+function stop() {
+
+  virsh -c qemu:///system list | awk '/running/ {print $2}' | while read VMNAME; do
+    stopVM $VMNAME
+    if [ $? -ne 0 ]; then
+      echo "Failed to shutdown VM $VMNAME"
+      continue
+    fi
+  done
+
+  echo "Waiting for VMs to shut down..."
+  cnt=0
+  while :
+  do
+    sleep $SHUTDOWN_INTERVAL
+    virsh -c qemu:///system list | grep -c running >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+      echo "All VMs successfully shut down"
+      break
+    fi
+    if [ $cnt -ge $SHUTDOWN_TIMEOUT ]; then
+      echo "Timeout waiting for VM shutdown"
+      break
+    fi
+    cnt=$(($cnt+$SHUTDOWN_INTERVAL))
+  done
+
+}
+
+function stopVM() {
+
+  VMNAME=$1
+
+  if [ -z "$VMNAME" ]; then
+    echo "No VM name supplied"
+    return 1
+  fi
+
+  echo "Shutting down VM $VMNAME"
+  virsh -c qemu:///system shutdown $VMNAME
+  return $?
+}
+
+function runVM() {
+
+  VMNAME=$1
+
+  if [ -z "$VMNAME" ]; then
+    echo "No VM name supplied"
+    return 1
+  fi
+
+  echo "Starting VM $VMNAME"
+
+  VMID=$(awk -F: -v VMNAME=$VMNAME 'match($1,VMNAME) {print $2}' $VMCONF)
+  VMHOST=$(awk -F: -v VMNAME=$VMNAME 'match($1,VMNAME) {print $3}' $VMCONF)
+  VMBOOT=$(awk -F: -v VMNAME=$VMNAME 'match($1,VMNAME) {print $4}' $VMCONF)
+
+  isVMRunning $VMNAME
+  if [ $? -ne 0 ]; then
+    return 0
+  fi
+
+  VMDEPLOYDEF=$(ls -1rt $VMSTORE/$VMID/images/deployment.*|tail -1)
+
+  if [ "$VMHOST" = "$(hostname -s)" ]; then
+    echo "Starting $VMNAME on $VMHOST"
+    if [ ! -f $VMDEPLOYDEF ]; then
+      echo "Could not find deployment descriptor for $VMNAME ($VMDEPLOYDEF)"
+    else
+      virsh -c qemu:///system create $VMDEPLOYDEF
+      return $?
+    fi
+  fi
+
+}
+
+function status() {
+  
+  for host in $CLUSTERHOSTS; do
+    echo "VMs running on $host:"
+    echo ""
+    virsh -c qemu://$host/system list
+  done
+
+}
+
+case $1 in
+  start|stop|status)
+    $1
+    ;;
+  *)
+    echo "usage: kvminit start|stop|status"
+    exit 1
+    ;;
+esac
+
+exit 0

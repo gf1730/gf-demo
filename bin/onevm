@@ -1,0 +1,265 @@
+#!/bin/bash
+
+################################################################################
+# onevm - wrapper script for onevm command
+#
+# Description: This script is used to wrap the standard onevm OpenNebula command 
+# to provide a facility for locking VMs to prevent them from being deleted with 
+# the onevm delete command.
+################################################################################
+
+ONEVMLOCK=/var/lib/one/onevm.lock
+CLOUDBASE=/mincom/cloud
+VMLINK=$CLOUDBASE/vmlink
+VMCONF=$CLOUDBASE/etc/vm.conf
+CLUCONF=$CLOUDBASE/etc/cluster.conf
+SCRIPTDIR=$CLOUDBASE/scripts
+VMSTORE=$CLOUDBASE/vmstore
+ONEVM=/mincom/cloud/one/bin/onevm
+
+COMMAND=$1
+VM=$2
+
+function main()
+{
+   if [ $# -ge 1 ]; then
+      case $COMMAND in
+         setboot)
+            setbootVM $VM Y
+            exit 0
+         ;;
+         setnoboot)
+            setbootVM $VM N
+            exit 0
+         ;;
+         lock|protect)
+            lockVM $VM
+            exit 0
+         ;;
+         unlock|unprotect)
+            unlockVM $VM
+            exit 0
+         ;;
+         showlock|locked|protected)
+            showlockVM
+            exit 0;
+         ;;
+         delete)
+            deleteVM $VM
+         ;;
+       esac
+   fi
+   $ONEVM $*
+}
+
+function setbootVM()
+{
+   VM=$1
+   BOOTFLAG=${2:-Y}
+   BOOTFLAG=$(echo $BOOTFLAG | tr '[:lower:]' '[:upper:]')
+
+   if [ -z "$VM" ]; then
+      echo "usage: onevm setboot <VM> [<Y|N>]"
+      exit 1
+   fi
+
+   VMID=$(getVMID $VM)
+   if [ -z "$VMID" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+
+   VMDEPLOYID=$(getVMDeployID $VM)
+   if [ -z "$VMDEPLOYID" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+
+   VMHOST=$(getVMHost $VM)
+   ssh $VMHOST mkdir -p $CLOUDBASE/etc
+   if [ $? -ne -0 ]; then
+     echo "Failed to create remote directory $CLOUDBASE/etc on $VMHOST"
+     exit 1
+   fi
+
+   # check for cluster conf file
+   ssh $VMHOST ls $CLUCONF >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      echo "Creating $CLUCONF on $VMHOST"
+      ssh $VMHOST touch $CLUCONF
+      if [ $? -ne 0 ]; then
+         echo "Failed to create $CLUCONF on $VMHOST"
+         exit 1
+      fi
+   fi
+
+   # check/add host to cluster conf file
+   ssh $VMHOST grep -c "^$VMHOST$" $CLUCONF >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      echo "Adding $VMHOST to $CLUCONF on $VMHOST"
+      ssh $VMHOST "echo \"$VMHOST\" >> $CLUCONF"
+      if [ $? -ne 0 ]; then
+         echo "Failed to add $VMHOST to $CLUCONF"
+         exit 1
+      fi
+   fi
+
+   # check for vm conf file
+   ssh $VMHOST ls $VMCONF >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      echo "Creating $VMCONF on $VMHOST"
+      ssh $VMHOST touch $VMCONF
+      if [ $? -ne 0 ]; then
+         echo "Failed to create $VMCONF on $VMHOST"
+         exit 1
+      fi
+   fi
+
+   # add/update vm config entry
+   ssh $VMHOST grep -c "^$VMDEPLOYID:" $VMCONF >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      echo "Adding $VMDEPLOYID to $VMCONF"
+      ssh $VMHOST "echo $VMDEPLOYID:$VMID:$VMHOST:$BOOTFLAG >> $VMCONF"
+   else
+      echo "Replacing $VMDEPLOYID in $VMCONF"
+      ssh $VMHOST "sed -i \"s/^$VMDEPLOYID:.*/$VMDEPLOYID:$VMID:$VMHOST:$BOOTFLAG/\" $VMCONF"
+   fi
+
+   # check/install kvminit (system startup script)
+   ssh $VMHOST ls /etc/init.d/kvminit >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+      echo "Installing kvm init script on $VMHOST"
+      sudo scp $SCRIPTDIR/kvminit $VMHOST:/etc/init.d/
+      sudo ssh $VMHOST chkconfig --add kvminit
+      sudo ssh $VMHOST chkconfig --list kvminit
+   fi
+
+   return 0
+}
+
+function lockVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm lock <VM>"
+      exit 1
+   fi
+   VMID=$(getVMID $VM)
+   if [ -z "$VMID" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   VMNAME=$(getVMName $VM)
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   VMHOST=$(getVMHost $VM)
+   if [ -z "$VMHOST" ]; then
+      echo "Could not find VM host for $VM"
+      exit 1
+   fi
+   grep -c ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -ne 0 ]; then
+     echo "$VMNAME $(date +%s)" >> $ONEVMLOCK
+   fi
+
+   echo "Protecting $VMNAME on $VMHOST"
+   ssh $VMHOST mkdir -p $VMLINK/$VMID/images
+   ssh $VMHOST ln -f $VMSTORE/$VMID/images/* $VMLINK/$VMID/images/
+
+}
+
+function unlockVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm unlock <VM>"
+      exit 1
+   fi
+   VMID=$(getVMID $VM)
+   if [ -z "$VMID" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   VMNAME=$(getVMName $VM)
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   VMHOST=$(getVMHost $VM)
+   if [ -z "$VMHOST" ]; then
+      echo "Could not find VM host for $VM"
+      exit 1
+   fi
+   grep -cw ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+      grep -vw ^$VMNAME $ONEVMLOCK > /tmp/onevm.lock.$$
+      mv /tmp/onevm.lock.$$ $ONEVMLOCK
+   fi
+
+   echo "Unprotecting $VMNAME on $VMHOST"
+   ssh $VMHOST rm $VMLINK/$VMID/images/*
+   ssh $VMHOST rmdir $VMLINK/$VMID/images
+   ssh $VMHOST rmdir $VMLINK/$VMID
+}
+
+function showlockVM()
+{
+   if [ -f $ONEVMLOCK ]; then
+      exec 3<$ONEVMLOCK
+      printf "%-10s %-30s\n" "Name" "Date Locked"
+      printf "%-10s %-30s\n" "----------" "------------------------------"
+      while read <&3 VM DATE; do
+         printf "%-10s %-30s\n" "$VM" "$(date -d @$DATE)"
+      done
+      exec 3>&-
+   fi
+}
+
+function deleteVM()
+{
+   VM=$1
+   if [ -z "$VM" ]; then
+      echo "usage: onevm delete <VM>"
+      exit 1
+   fi
+   VMNAME=$(getVMName $VM)
+   if [ -z "$VMNAME" ]; then
+      echo "VM $VM does not exist"
+      exit 1
+   fi
+   grep -cw ^$VMNAME $ONEVMLOCK >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+      echo "VM $VMNAME is locked"
+      exit 1
+   fi
+}
+
+function getVMID()
+{
+   VM=$1
+   onevm show $VM | awk '/^ID[ ]*:/ {print $NF}'
+}
+
+function getVMDeployID()
+{
+   VM=$1
+   onevm show $VM | awk '/^DEPLOY ID[ ]*:/ {print $NF}'
+}
+
+function getVMName()
+{
+   VM=$1
+   onevm show $VM | awk '/^NAME[ ]*:/ {print $NF}'
+}
+
+function getVMHost()
+{
+   VM=$1
+   VMID=$(getVMID $VM)
+   onevm list | awk -v VMID=$VMID 'match($0,"[ ]*" VMID) {print $(NF-2)}'
+}
+
+# Run the real onevm command
+main $*

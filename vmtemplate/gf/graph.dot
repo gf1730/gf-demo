@@ -1,0 +1,15 @@
+digraph RGL__DirectedAdjacencyGraph {
+    webserver [
+        fontsize = 8,
+        label = webserver
+    ]
+
+    dbserver [
+        fontsize = 8,
+        label = dbserver
+    ]
+
+    webserver -> dbserver [
+        fontsize = 8
+    ]
+}
